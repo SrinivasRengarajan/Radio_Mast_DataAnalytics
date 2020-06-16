@@ -1,0 +1,643 @@
+---
+title: "Radio Mast Data Analytics"
+author: "SrinivasRengarajan"
+date: "4/12/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+a) Exploratory Data Analysis and Data Cleaning/Reduction:
+
+The training and scoring data set has been loaded as tibbles from the excel file using readxl package’s read_xlsx function.
+
+The tibbles are then casted into data frames using data.frame() for automatic cleaning of the column names or the variable names from a non-standard name into a standard ones.
+
+The entire training data is summarised using Data Explorer package’s intro function and visualised via its intro_plot function. Upon summarising and visualising, few interesting and important things were observed. Firstly, Data was not balanced. There were around 90% of records for ‘okay’ class and just around 10% records for ‘under’ class. Because of this, any machine learning algorithm would learn more about the ‘okay’ class than the ‘under’ class and tend to only predict ‘okay’ class for all the instances in the unseen test set. This had to be handled by either balancing the data using resampling techniques like upsampling/downsampling or by choosing different evaluation metrics like Kappa which penalises the class with more number of records, Sensitivity/Specificity curve (ROC-AUC) or Precision/Recall curve (PR-AUC). Precision Recall (PR AUC) was used in for all classifiers implemented across this project because of the growing improvements on their usage in many researches evaluating the classifier with high data imbalance.
+
+In the case of imbalanced datasets, the interpretability of ROC plots can be deceptive with respect to conclusions about the reliability of classification performance, owing to an intuitive but wrong interpretation of specificity. Precision-recall curve plots, on the other hand, can provide the viewer with an accurate prediction of future classification performance due to the fact that they evaluate the fraction of true positives among positive predictions" -— “The Precision-Recall Plot Is More Informative than the ROC Plot When Evaluating Binary Classifiers on Imbalanced Datasets, 2015.” https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4349800/
+
+If the ratio of positive to negative instances changes in a test set, then the ROC curves will not change. But metrics such as precision, F scores use values from both columns of the confusion matrix. As a class distribution changes these measures will change as well. ROC graphs are based upon TP rate and FP rate, in which each dimension is a columnar ratio, so does not depend on class distributions. — “ROC Graphs: Notes and Practical Considerations for Data Mining Researchers, 2003”. http://www.blogspot.udec.ugto.saedsayad.com/docs/ROC101.pdf
+
+There were around 95% of rows with complete records while having just around 7% of missing values.
+About 75% of the features were continuous while the rest were discrete in nature. There were totally 79 features initially.
+
+Features like AntennaFileName1, AntennaFileName2, RFDBid etc.. which didn’t look relevant in solving the problem (after reading the domain knowledge pdf on radio masts) were dropped from the train and score data.
+
+Then, Correlation matrix heat map is plotted using ggplot for the numerical features and found that ThermalFadeMargin1, ThermalFadeMargin1, EffectiveFadeMargin1, EffectiveFadeMargin2, FlatfademarginmultipathdB2 etc.. were strongly correlated while FrequencyMHZ appeared to be a predictor which doesn’t have any strong correlations with other predictors. The correlation cut-off used is 0.75.
+
+The categorical variables (“Eng_Class”,“DispersivefademargindB1”,“Emissiondesignator1”,“MiscellaneouslossdB1”,“Passivegain2dB”,“Polarization”,“RXthresholdcriteria1”,“RXthresholdcriteria2”) were then factorized in the training and scoring set using factor() function applied inside lapply() function.
+
+Predictors with zero variance and near-zero variances were found using nearzerovar function and removed from the train and score data as those predictors may cause our model to be unstable or crashing. Zero variance means a variable or predictor having only one unique value whereas near zero variance means a predictor having very few unique values. In this radio mast analysis problem, Dispersivefadeoccurrencefactor was found to be a zero variance predictor and predictors related to AntennaHeight, Circulatorbranchingloss, Diffractionloss, Dispersivefademargin, Passivegain were to name a few out of 10 near zero variance predictors.
+
+The missing value columns were then found (DpQ_R2 (9 missing values) and Fullmint1 (6 missing values)) and the number of missing values in each column has been obtained using aggr function under VIM package. Those predictors with missing values were then imputed with their respective median values using the preProcess function available in the Caret package.
+
+The entire structure of the training and scoring set has been verified after the data cleaning process using the str function.
+
+
+```{r DataImporting}
+
+#Install readxl package from CRAN and load it into the current R session for reading excel files
+#install.packages("readxl")
+library(readxl)
+
+#Install tidyverse package for interacting with data in a sophisticated manner
+#install.packages("tidyverse")
+library(tidyverse)
+
+#Exploratory Data Analysis
+#Read the training and test data from excel file
+train.data <- read_xlsx("RF_TrainingDatasetA_Final.xlsx")
+score.data <- read_xlsx("RF_ScoringDatasetA_Final.xlsx")
+
+#To know the class of the datasets
+class(train.data)
+class(score.data)
+
+#Convert the tibbles into dataframes
+train.data <- data.frame(train.data)
+score.data <- data.frame(score.data)
+
+#View the train and test dataframes
+#View(train.data)
+#View(score.data)
+
+#Package for streamlining the model buiding and evaluation processes
+library(caret)
+
+library(VIM)
+
+uniqueValues <- lapply(train.data,unique)
+
+cat("\nVariables having zero variance (having only one unique value):\n")
+lengths(uniqueValues)[lengths(uniqueValues)==1]
+
+#To know the structure of the training and test dataframes
+#str(trainSet)
+#str(scoreSet)
+
+```
+
+```{r Exploratory Data Analysis, echo=TRUE}
+
+ggplot(train.data, aes(Eng_Class)) + geom_bar(aes(fill=Eng_Class))
+
+library(DataExplorer)
+
+introduce(train.data)
+
+plot_intro(train.data)
+
+```
+
+```{r EDA,Data Cleaning&Reduction}
+
+library(reshape2)
+
+#Finding the correlation among predictors in training data
+correlationMatrix <- round(cor(train.data[c(5:10,15,16,22:25,35:38,52,64,67)]),2)
+
+#Retrieving only the upper triangle of correlation matrix
+get_upper_triangle <- function(correlationMatrix){
+    correlationMatrix[lower.tri(correlationMatrix)]<- NA
+    return(correlationMatrix)
+  }
+
+upper_triangle <- get_upper_triangle(correlationMatrix)
+
+melted_correlationMatrix <- melt(upper_triangle, na.rm = TRUE)
+
+# Heatmap of correlation matrix
+library(ggplot2)
+
+#Correlation matrix heat map using ggplot
+ggplot(data = melted_correlationMatrix, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+   midpoint = 0, limit = c(-1,1), space = "Lab",
+   name="Pearson\nCorrelation") +
+  theme_minimal()+
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, size = 12, hjust = 1))+ coord_fixed()
+
+#Fetching features or predictors having correlation more than 0.75
+highCorrFeatures <- findCorrelation(cor(train.data[c(5:10,15,16,22:25,35:38,52,64,67)]),cutoff=0.75, names=TRUE)
+
+highCorrFeatures
+
+#Dropping features that are not relevant from the trainingSet and scoringSet
+
+variables_train <- names(train.data) %in% c("Outcome","Dispersivefadeoccurrencefactor","Antennafilename1","Antennafilename2","DispersivefademargindB2","ThermalFadeMargindB1","ThermalFadeMargindB2","EffectiveFadeMargindB1","EffectiveFadeMargindB2","ERPdbm2","ERPwatts2","MainnetpathlossdB2","MainreceivesignaldBm2","OtherRXlossdB2","OtherTXlossdB2","RXthresholdleveldBm2","RXthresholdlevelv2","RXthresholdcriteria2","TXpowerdBm2","FlatfademarginmultipathdB2","EIRPdBm1","CirculatorbranchinglossdB2","FreespacelossdB","Emissiondesignator1","Emissiondesignator2","MiscellaneouslossdB2","AntennagaindBi1","AntennagaindBi2","AntennagaindBd1","Radiofilename1","Radiofilename2","Radiomodel1","Radiomodel2","Antennamodel1","Antennamodel2","RFDBid")
+
+train.data <- train.data[!variables_train]
+
+#Renaming mismatching predictor names from the scoring data
+colnames(score.data)[colnames(score.data)=="EffectivefademargindB1"] <- "EffectiveFadeMargindB1"
+colnames(score.data)[colnames(score.data)=="EffectivefademargindB2"] <- "EffectiveFadeMargindB2"
+colnames(score.data)[colnames(score.data)=="ThermalfademargindB1"] <- "ThermalFadeMargindB1"
+colnames(score.data)[colnames(score.data)=="ThermalfademargindB2"] <- "ThermalFadeMargindB2"
+
+variables_score <- names(score.data) %in% c("Dispersivefadeoccurrencefactor","Antennafilename1","Antennafilename2","DispersivefademargindB2","ThermalFadeMargindB1","ThermalFadeMargindB2","EffectiveFadeMargindB1","EffectiveFadeMargindB2","ERPdbm2","ERPwatts2","MainnetpathlossdB2","MainreceivesignaldBm2","OtherRXlossdB2","OtherTXlossdB2","RXthresholdleveldBm2","RXthresholdlevelv2","RXthresholdcriteria2","TXpowerdBm2","FlatfademarginmultipathdB2","EIRPdBm1","CirculatorbranchinglossdB2","FreespacelossdB","Emissiondesignator1","Emissiondesignator2","MiscellaneouslossdB2","AntennagaindBi1","AntennagaindBi2","AntennagaindBd1","Radiofilename1","Radiofilename2","Radiomodel1","Radiomodel2","Antennamodel1","Antennamodel2","RFDBid")
+
+score.data <- score.data[!variables_score]
+
+
+```
+
+```{r Data Cleaning&Reduction1}
+
+#str(trainSetCleaned)
+
+factorColumns <- c("Eng_Class","DispersivefademargindB1","MiscellaneouslossdB1","Passivegain2dB","Polarization","RXthresholdcriteria1")
+
+#Factoring the above columns in Training Set
+train.data[factorColumns] <- lapply(train.data[factorColumns], factor)
+
+#Factoring the columns in the Testing set
+score.data[factorColumns[factorColumns!="Eng_Class"]] <- lapply(score.data[factorColumns[factorColumns!="Eng_Class"]], factor)
+
+# View(train.data)
+# View(score.data)
+
+```
+
+```{r Data Cleaning&Reduction2}
+
+#Finding near zero variance predictors
+nzv.train <- nearZeroVar(train.data,saveMetrics = TRUE)
+nzv.train[nzv.train$nzv,][1:10,]
+
+nzv.score <- nearZeroVar(score.data,saveMetrics = TRUE)
+nzv.score[nzv.score$nzv,][1:10,]
+
+nzv.train <- nearZeroVar(train.data)
+nzv.score <- nearZeroVar(score.data)
+
+#Removing the near zero variance predictors from the training and scoring data
+train.data <- train.data[,-nzv.train]
+score.data <- score.data[,-nzv.score]
+
+#The dimensions after removing the near zero variance predictors from the train and scoring data
+dim(train.data)
+dim(score.data)
+
+```
+
+```{r Data Cleaning&Reduction3}
+
+#Get the missing values information by aggr function in VIM package
+missingValueDetails.train <- aggr(train.data,numbers=T)
+missingValueDetails.train
+
+```
+
+On further analysis of a few predictors using barplot, boxplots in ggplot and chi-square statistical test, it was observed that:
+
+1) The under engineered radio masts had a median FlatfademarginmultipathdB1 of around 15 whereas the well      engineered radio masts had around 25.
+
+2) The distribution of FrequencyMhz for both okay and under engineered masts are left skewed. The under        engineered radio masts had a median FrequencyMhz of around 26 whereas the well engineered radio masts had    around 22.
+
+3) About 85 % of the vertically polarized masts were okay and the rest under engineered.
+
+4) The median of MainreceivesignaldBm1 for both type of masts are almost the same around -50.
+
+5) The chi-squared tests showed that the Polarization and RxThresholdCriteria1 factors were significant at     95% confidence in classifying the radio mast as okay or under engineered.
+
+EDA Actions & Proposals:
+
+With the help of all the Exploratory Data Analysis done above, we can observe that nearly half the amount of predictors are not so influential in one way or the other in classifying the labels. So,this could introduce noise in the model which might lead to low bias(more accuracy in training) and high variance(bad predictions on unseen data) i.e., overfitting. Thus, dropped those features from the training and scoring data.
+
+```{r Analysis, echo=T}
+
+#Colours used in plots generated by ggplots
+myfillcolors=c("green","red")
+
+#Boxplot for FlatfademarginmultipathdB1 vs Engineering_Class
+train.data%>%ggplot(aes(x=Eng_Class,y=FlatfademarginmultipathdB1,fill=Eng_Class))+geom_boxplot(alpha=0.8)+scale_fill_manual(values=myfillcolors)+coord_flip()
+
+#Boxplot for FrequencyMHz vs Engineering_Class
+train.data%>%ggplot(aes(x=Eng_Class,y=FrequencyMHz,fill=Eng_Class))+geom_boxplot(alpha=0.8)+scale_fill_manual(values=myfillcolors)+coord_flip()
+
+#Boxplot for DpQ_R2 vs Engineering_Class
+train.data%>%ggplot(aes(x=Eng_Class,y=DpQ_R2,fill=Eng_Class))+geom_boxplot(alpha=0.8)+scale_fill_manual(values=myfillcolors)+coord_flip()
+
+#Boxplot for MainreceivesignaldBm1 vs Engineering_Class
+train.data%>%ggplot(aes(x=Eng_Class,y=MainreceivesignaldBm1,fill=Eng_Class))+geom_boxplot(alpha=0.8)+scale_fill_manual(values=myfillcolors)+coord_flip()
+
+#Barplot for Polarization vs Engineering_Class
+ggplot(train.data, aes(Polarization)) + geom_bar(aes(fill=Eng_Class))
+
+#Performing chi-square test to analyse the reltionship between Polarization and Engineering_Class
+
+#Null Hypothesis: No relationship exists between Polarization and Engineering_Class
+#Alternate Hypothesis: Polarization and Engineering_Class have relationship between them
+
+chisq.test(train.data$Polarization,train.data$Eng_Class,correct = F)
+
+#p-value=0.02144 which is lesser than 0.05(5% significance level), so rejected the null hypothesis.
+#Therefore, with 95% confidence, we could say that there was a relationship existing between Polarization and Engineering_Class.
+
+#Performing chi-square test to analyse the reltionship between Polarization and Engineering_Class
+
+#Null Hypothesis: No relationship exists between RXthresholdcriteria1 and Engineering_Class
+#Alternate Hypothesis: RXthresholdcriteria1 and Engineering_Class have relationship between them
+
+chisq.test(train.data$RXthresholdcriteria1,train.data$Eng_Class,correct = F)
+
+#p-value < 2.2e-16 which is way lesser than 0.05(5% significance level), so rejected the null hypothesis.
+#Therefore, with 95% confidence, we could say that a relationship exist between Polarization and Engineering_Class.
+
+```
+
+
+b) Train/Test methodology:
+
+There were around 2186 observations in original dataset. So, it had been split in the ratio of 75:25 into train and test set using createDataPartition function available in the Caret package. This function does random resampling of the data and split them. With the help of bar plot in ggplot, it was observed that both the split train and test set had around 85% of data for 'okay' class and around 15% in 'under' class indicating data imbalance.
+
+```{r Data Partitioning and Preprocessing}
+
+#For reproducibility
+set.seed(599)
+
+#Splitting the training data into train and set with 75:25 proportion.
+#createDataPartition is used for splitting as it would do random resampling
+training.indices <- createDataPartition(train.data$Eng_Class,p=0.75,list=FALSE)
+
+#train set
+train <- train.data[training.indices,]
+
+#test set
+test <- train.data[-training.indices,]
+
+#Dimensions of train set
+dim(train)
+
+#Dimensions of test set
+dim(test)
+
+cat("Value Counts in Train set\n")
+ggplot(train, aes(Eng_Class)) + geom_bar(aes(fill=Eng_Class))
+
+cat("Value Counts in Test set\n")
+ggplot(test, aes(Eng_Class)) + geom_bar(aes(fill=Eng_Class))
+
+# View(train)
+# View(test)
+
+```
+
+The missing values for the predictors were imputed in the train and test data using the median imputation available in the preProcess function in the caret package.
+
+```{r Missing values Imputation}
+
+preProcessor <- preProcess(train,method=c("medianImpute"))
+
+train <- predict(preProcessor,train)
+test <- predict(preProcessor,test)
+
+cat("After Pre-Processing, the number of predictors with missing values: ",sum(colSums(is.na(train))))
+```
+
+```{r GoogleCloud}
+
+#install.packages("cloudml")
+#library(cloudml)
+#gcloud_install()
+
+```
+
+The three algorithms chosen for classification were knn, decision tree and random forest. 
+All the three classifiers were trained in the train set, cross-validated using 10-fold cross validation   and evaluated in the test set. The standard performance metric used for model comparisons and final model choosing was PR-AUC. 
+
+First, a KNN model was built with hyperparameter tuning using functions in caret package.
+knn-classification algorithm is an instance based learning algorithm. All the numerical features were centred and scaled using caret's preProcess function. Centering and scaling was done to bring all the numerical features into the same scale (with mean 0 and standard deviation 1) so that it would be easier for the algorithm to find the Euclidean distance. Given an unseen test instance, the label was predicted for it by taking the majority vote of the labels among the k closest neighbours in the training set. k is the hyperparameter here. It was tuned to get the optimal parameter using grid search having the search space of k=5 to 30. The highest AUC (0.41) was obtianed for k=30 as could be seen in the line plot below.
+
+The AUC of the tuned knn model on the test set is 0.727. As this was less, went with buiding the decision tree and random forest models and then compared their performances. 
+```{r k-Nearest Neighbours Algorithm with parameter tuning, echo=T}
+
+#For getting prSummary function
+library(MLmetrics)
+
+library(PRROC)
+
+#setting the training controls
+fitControl <- trainControl(method="cv",number = 10,classProbs=TRUE,summaryFunction = prSummary)
+
+#Setting the search space for the optimal hyperparameter in the grid
+knnGrid <- expand.grid(k=5:30)
+
+set.seed(599)
+
+#Fitting the model with the control and grid parameters
+knnFit <- train(Eng_Class~.,data = train,method = "knn",trControl=fitControl,tuneGrid=knnGrid,
+                preProcess = c("center","scale"), metric="AUC")
+knnFit
+
+trellis.par.set(caretTheme())
+
+plot(knnFit)
+
+#Evaluation of the fitted model in the test set by predicting their labels 
+
+knnTest <- predict(knnFit,test)
+
+confusionMatrix(knnTest,test$Eng_Class)
+
+knnTest.prob <- predict(knnFit,test,type="prob")
+
+index_class2 <- test$Eng_Class=="under"
+index_class1 <- test$Eng_Class=="okay"
+  
+plot(pr.curve(knnTest.prob$under[index_class2],knnTest.prob$under[index_class1],curve=TRUE))
+
+```
+
+Next, a decision tree model was built on the training set data with tree pruning implicitly implemented using the rpart library inside the caret library's train function. 
+
+Decision tree is a simple but easily interpretable machine learning model.
+The tree starts splitting from the root node (most important node) and further splits into the internal nodes until it reaches the leaf nodes or label nodes. The nodes chosen for splitting could be found either using information gain or gini index.
+The variable having the higest information gain is selected as the root node. Info Gain is found by subtracting the entropy (impurity or uncertainity) of the independent variable from the entropy of the target variable.
+Lower the probablity of a variable, higher the entropy and higher its probability, lesser the entropy.
+The highest AUC (0.46) was obtianed for cp = 0.04368932. [cp-complexity parameter]
+
+The AUC of the pruned decision tree model on the test set is 0.726 which was similar to the AUC obtained by knn model. So, went ahead with building a random forest model.
+```{r Decision Tree Model building with Pruning using K-fold Cross Validation, echo=T}
+
+# ?train
+
+#Decision Tree library
+library(rpart)
+
+#For interactive decision tree plotting
+library(rattle)
+
+library(rpart.plot)
+
+library(RColorBrewer)
+
+#For Reproducibility
+set.seed(599)
+
+#Fitting the model with the control parameters
+decisionTreeFit=train(Eng_Class ~ ., 
+                  data=train, 
+                  method="rpart",
+                  trControl = trainControl(method = "cv",number=10,classProbs=T,summaryFunction=prSummary),
+                  metric="AUC")
+
+decisionTreeFit
+
+fancyRpartPlot(decisionTreeFit$finalModel)
+
+plot(decisionTreeFit)
+
+#Evaluation of the fitted model in the test set by predicting their labels 
+  
+decisionTreeTest <- predict(decisionTreeFit,test)
+
+confusionMatrix(decisionTreeTest,test$Eng_Class)
+
+decisionTreeTest.prob <- predict(decisionTreeFit,test,type="prob")
+
+index_class2 <- test$Eng_Class=="under"
+index_class1 <- test$Eng_Class=="okay"
+  
+plot(pr.curve(decisionTreeTest.prob$under[index_class2],decisionTreeTest.prob$under[index_class1],curve=TRUE))
+
+```
+
+Trying to improve the model performance using Random Forest:
+
+Random Forest is an Ensemble technique (combination of two or more models) which uses the principle of Bagging(Bootstrapping and Aggregating) where the dataset is randomly sampled of equal observations and many number of independent trees are grown, all are modelled using decision trees and labels are predicted by majority voting as this is a classification problem, otherwise results would be averaged (regression problems).
+
+The main parameter is mtry that is the number of features by which each tree should be split at random.
+We arrive at the best parameter for our combination of predictor variables by grid searching for various mtry values ranging from 5 to 35. We obtain high AUC (75.01%) at mtry=5 comparatively to other values of mtry. 
+
+The AUC of the tuned random forest model on the test set is 0.942. This model's performance is incredibly higher than the previous two models. This is because of bootstrapping (Bagging + Aggregating). Random forest model reduces the variance by taking majority vote for the labels. It also decorrelates the trees by taking random subset of predictors for each split in the tree.
+
+```{r RandomForest Model building with Performance Tuning, echo=T}
+
+# ?train
+
+#setting the grid
+randomForestGrid <- expand.grid(mtry=5:30)
+
+#setting the training control params 
+fitControl <- trainControl(method = "cv",number = 10,classProbs = T, summaryFunction = prSummary)
+
+library(randomForest)
+
+#For reproducibility
+set.seed(599)
+
+#Fitting the random forest model on the training set data
+randomForestFit=train(train[,2:34], train$Eng_Class,
+                      method="rf",
+                      trControl=fitControl,
+                      tuneGrid=randomForestGrid,metric="AUC")
+randomForestFit
+
+trellis.par.set(caretTheme())
+
+plot(randomForestFit)
+
+#Checking the variable importance in the fitted model using varImpPlot function
+varImpPlot(randomForestFit$finalModel)
+
+
+```
+
+```{r RandomForest predictions and metric evaluation on test set}
+
+#Evaluation of the fitted model in the test set by predicting their labels 
+
+randomForestTest <- predict(randomForestFit,test)
+
+confusionMatrix(randomForestTest,test$Eng_Class)
+
+randomForestTest.prob <- predict(randomForestFit,test,type="prob")
+
+index_class2 <- test$Eng_Class=="under"
+index_class1 <- test$Eng_Class=="okay"
+  
+plot(pr.curve(randomForestTest.prob$under[index_class2],randomForestTest.prob$under[index_class1],curve=TRUE))
+```
+
+All the above three models' performances were compared by resampling function. This function provides methods for analyzing and visualising a set of resampling results (results from fitted models) using a common data taken from training set. On visualising, it could be very well seen that the median AUC's of 3 models (KNN - 0.41, Decision Tree - 0.46 and Random Forest - 0.75) for 10 samples were in alignment what what we had obtained for the entire training set data. When plotted the difference in AUC's between these models using dotplot, it could be explained that there was a very little difference in performance between KNN and decision tree whereas random forest model had a huge difference to those models of around 0.35. So, our final model choosen for classfying the scoring data was Random Forest.
+
+```{r Model Performance Comparisons, echo=T}
+
+set.seed(599)
+
+#Taking a set of common samples from the fitted models and running the model on them for performance comparison 
+resamps <- resamples(list(KNN=knnFit, DECISIONTREE=decisionTreeFit, RANDOMFOREST=randomForestFit))
+
+resamps
+
+summary(resamps)
+
+resamps_theme <- trellis.par.get()
+resamps_theme$plot.symbol$col=rgb(.2,.2,.2,.4)
+resamps_theme$plot.symbol$pch=16
+resamps_theme$plot.line$col=rgb(1,0,0,.7)
+resamps_theme$plot.line$lwd <- 2
+trellis.par.set(resamps_theme)
+
+dotplot(resamps, metric = "AUC")
+
+#To check how much one model was differing from the other in terms of performance metrics
+difference <- diff(resamps)
+
+summary(difference)
+
+trellis.par.set(caretTheme())
+
+dotplot(difference)
+
+```
+
+c) Recursive feature elimination was used as the feature selection method here. This technique would build a model with all the variables, and then the algorithm would start removing the weakest features one by one until we reach the specified number of features. In Recursive Feature Elimination, we would need to specify the feature sizes to be used. This could be specified using the subset parameter. From the graph below, we could see that a better comparable AUC was obtained with 15 variables. After that it didn't increase much.
+So, the top 15 best performing features were selected for optimizing the random forest model.
+
+```{r FeatureSelection,echo=TRUE}
+
+library(mlbench)
+
+#Predictors sizes
+subsets <- c(1:5,10,15,20,25)
+
+rfFuncs$summary=prSummary
+
+# define the control using a random forest selection function
+control <- rfeControl(functions=rfFuncs,method="cv",number=10, verbose = FALSE)
+
+fitControl <- trainControl(classProbs = T, summaryFunction = prSummary)
+
+set.seed(599)
+
+# running the Recursive Feature Elimination algorithm
+results <- rfe(train[,2:34], train$Eng_Class, sizes=subsets, trControl=fitControl, rfeControl=control, metric="AUC")
+
+results
+
+#To get the optimal list of variables
+results$optVariables
+
+# plotting the results
+plot(results, type=c("g", "o"))
+
+#varImp(randomForestFit)
+
+```
+
+Here, we had built a model with the top 15 best performing predictors selected from above and a random forest model was built with them and the optimized model was tested with the test set. From the graph below, we could see that the AUC ( from 0.942 to 0.952) was increased slightly and also the other metrics have significantly improved like kappa (from 0.80 to 0.86) and specificity (from 0.73 to 0.79). 
+
+```{r Test Set Predictions using best model (RandomForest with features obtained through RFE),echo=T}
+
+fitControl <- trainControl(method="cv",number=10, classProbs = T, summaryFunction = prSummary)
+
+#randomForestGrid <- expand.grid(mtry=2:10)
+
+set.seed(599)
+
+randomForestFit.optimal=train(Eng_Class~FlatfademarginmultipathdB1+R_Powerfd1+Pathlengthkm+MainreceivesignaldBm1+AtmosphericabsorptionlossdB+dbperKmRatio+DpQ_R2+RXthresholdlevelv1+RXthresholdleveldBm1+Polarization+R_Powerfd2+Fullmaxt1+Fullmint1+EIRPdBm2+FadeoccurrencefactorPo, data=train,method="rf", trControl=fitControl, metric="AUC")
+
+randomForestFit.optimal
+
+randomForestTest2 <- predict(randomForestFit.optimal,test)
+
+confusionMatrix(randomForestTest2,test$Eng_Class)
+
+randomForestTest.optimal.prob <- predict(randomForestFit.optimal,test,type="prob")
+
+index_class2 <- test$Eng_Class=="under"
+index_class1 <- test$Eng_Class=="okay"
+  
+plot(pr.curve(randomForestTest.optimal.prob$under[index_class2],randomForestTest.optimal.prob$under[index_class1],curve=TRUE))
+
+```
+
+
+d) MODEL EXPLANATION TO DANIEL (RANDOM FOREST):
+
+In a bid to explain what is all about random forest, let me take an easy example, consider you are going to purchase a new laptop and that you have fixed the brand and variant, now you will surely ask your friends (obviously more than 1) for their reviews on the same brand/variant. Here, you are not depending on any one friend's review because that would be more biased. The reason is that he might be satisfied etremely well/bad with its performance whilst others might not be. So, you asked reviews from multiple people to get a generalised/collective opinion on the laptop brand. If most of their reviews were good enough, then you might consider purchasing that laptop brand otherwise you would not. So, that's it!! This is an anecdote of how random forest works from the top level. 
+
+The above methodology is called Ensembling, meaning running multiple models on a training data set and their respective outputs are combined using some rule to obtain the final result. In our radio mast classification problem context, the rule would be to choose the class or result by majority voting (i.e., selecting the class chosen by majority of the models for the given data as the final answer); the data would be the important  features of the radio mast. Each model would be a decision tree in random forest algorithm. Decision tree is just a condition based tree which outputs the class label or result for the given input by traversing the new input down the already trained tree. The conditions would be normal if..else questions asked based on the features. If the condition is evaluated to true, the tree goes down the left and if the condition is false, the tree goes down the right. The tree keeps on parsing or going down till it reaches the result node or till it predicts the class for that record or observation. The difference in random forest to that of a decision tree is that here, each tree would be built with random set of observations and the questions asked for building the tree would be based on random subset of features of radio mast for different trees. Thus, any bias in the model is removed and the predictive power of the model significantly improves. In business scenario, this model would be easy to build and use, compared to many other compilcated models but would still acheive greater performance.
+
+Now that we knew the basics of how the random forest model works, I would like to brief you how the random forest model I built for our problem effectively address the question i.e., classification of radio mast into okay or under engineered.
+
+The best number of features obtained to be considered for each split in the decision tree was 5 as this gave good performance in comparison with the others. The number of decision trees built was 500.
+
+Loss function in our Random Forest model:
+
+The loss function here was the mean decrease in information gain when a feature of the radio mast was removed from the model. The larger the decrease in information gain, the higher the importance of the feature By this, the top 5 important features were FlatfademarginmultipathdB1, R_powerfd1, MainreceivesignaldBm1, dbperKmRatio and PathlengthKm. Among them when FlatfademarginmultipathdB1 alone was removed, the information loss was about 90. 
+
+e) Cost-Tuning in Random Forest model:
+
+Fitting the cost tuned random forest model. According to the costs given (1:h where h could be 8,16 or 24), 1:8 ratio was taken, so the samplesize parameter was set accordingly as sampsize=c(16,128), as there were 1640 samples in the train set. 1% is about 16 and 8% is about 128. In this way, we had given more weight to the rare class i.e., under engineered radio masts. As we could see in the results and graphs below, the AUC got reduced (0.794 from 0.9422, but specificity increased to 1 from 0.79) after cost tuning as the model gave more importance to reducing the number of false positives (the number of radio masts incorrectly scoreda as okay when it is under) as was required by Daniel. But this was done at the cost of model's reduced capability to find the true positives. 
+```{r Misclassification Cost tuned RandomForest model}
+
+#Setting the train control object
+fitControl <- trainControl(method="cv",number=10,classProbs = T, summaryFunction = prSummary)
+
+set.seed(599)
+
+#Fitting the cost tuned random forest model. According to the costs given, 1:8 was taken, so the samplesize parameter was set accordingly as sampsize=c(16,128), as there were 1640 samples in the train set.
+
+randomForestFit.costTuned=train(Eng_Class~FlatfademarginmultipathdB1+R_Powerfd1+Pathlengthkm+MainreceivesignaldBm1+AtmosphericabsorptionlossdB+dbperKmRatio+DpQ_R2+RXthresholdlevelv1+RXthresholdleveldBm1+Polarization+R_Powerfd2+Fullmaxt1+Fullmint1+EIRPdBm2+FadeoccurrencefactorPo, data=train, sampsize=c(16,128), strata=train$Eng_Class, method="rf", trControl=fitControl, metric="AUC")
+
+randomForestFit.costTuned
+
+trellis.par.set(caretTheme())
+
+plot(randomForestFit.costTuned)
+
+#Checking the variable importance
+varImpPlot(randomForestFit.costTuned$finalModel)
+
+#Evaluation of the fitted cost tuned random forest model in the test set by predicting their labels
+randomForestTest3 <- predict(randomForestFit.costTuned,test)
+
+confusionMatrix(randomForestTest3,test$Eng_Class)
+
+randomForestTest3.prob <- predict(randomForestFit.costTuned,test,type="prob")
+
+index_class2 <- test$Eng_Class=="under"
+index_class1 <- test$Eng_Class=="okay"
+  
+plot(pr.curve(randomForestTest3.prob$under[index_class2],randomForestTest3.prob$under[index_class1],curve=TRUE))
+
+```
+
+f) The scoring set records had been classified using the cost tuned Random Forest model. Out of 936 radio masts, 432 had been classified as okay and 504 was classified as under engineered. 
+
+```{r Scoringset Predictions using best model (cost tuned) (RandomForest with features obtained through RFE)}
+
+randomForestTest.scoringPredictions <- predict(randomForestFit.costTuned,score.data)
+
+#randomForestTest.scoringPredictions
+
+cat("\n Count of labels in each class")
+
+#Count of labels in each class
+table(randomForestTest.scoringPredictions)
+
+```
+
+The scoring set records had also been classified using the finalised model Random Forest without cost tuning. Out of 936 radio masts, 851 had been classified as okay and 85 was classified as under engineered. 
+
+```{r Scoringset Predictions using best model (without cost tuning) (RandomForest with features obtained through RFE)}
+
+randomForestTest.scoringPredictions2 <- predict(randomForestFit.optimal,score.data)
+
+#randomForestTest.scoringPredictions2
+
+cat("\n Count of labels in each class")
+
+#Count of labels in each class
+table(randomForestTest.scoringPredictions2)
+
+```
+
+
+
